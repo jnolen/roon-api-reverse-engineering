@@ -131,8 +131,31 @@ export class RemotingClient {
         reject(new Error(`remoting request ${rid} (cmd ${cmd}) timed out`));
       }, this.requestTimeoutMs);
       this.pending.set(rid, { chunks: [], resolve, reject, timer });
-      this.transport.send(encodeRequest(cmd, body, rid));
+      try {
+        this.transport.send(encodeRequest(cmd, body, rid));
+      } catch (err) {
+        // Dead transport (e.g. after close): fail now instead of leaking the
+        // pending entry until its timeout fires.
+        clearTimeout(timer);
+        this.pending.delete(rid);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
+  }
+
+  /**
+   * Fail every in-flight request immediately and clear the pending table.
+   * Mirrors node-roon-api's moo.clean_up(): called when the connection closes
+   * so callers get a prompt rejection instead of waiting out the request
+   * timeout. Idempotent — safe to call from both the explicit close() path
+   * and the socket 'close' event.
+   */
+  failPending(reason = 'connection closed'): void {
+    for (const [rid, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error(`remoting request ${rid} failed: ${reason}`));
+    }
+    this.pending.clear();
   }
 
   /**

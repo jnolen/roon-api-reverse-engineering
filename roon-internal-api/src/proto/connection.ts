@@ -36,7 +36,21 @@ export class RoonConnection implements Transport {
   private established = false;
   readonly clientBrokerId = crypto.randomBytes(16);
 
+  /**
+   * Fired once when the socket closes for any reason (explicit close(), peer
+   * disconnect, error) so the remoting layer can fail in-flight requests
+   * immediately instead of waiting out their timeouts.
+   */
+  onclosed: () => void = () => {};
+  private onclosedFired = false;
+
   constructor(private opts: ConnectionOptions) {}
+
+  private fireOnclosed(): void {
+    if (this.onclosedFired) return;
+    this.onclosedFired = true;
+    this.onclosed();
+  }
 
   onData(handler: (chunk: Buffer) => void): void {
     this.dataHandler = handler;
@@ -63,6 +77,10 @@ export class RoonConnection implements Transport {
 
       socket.on('timeout', () => fail(new Error('connection timed out during handshake')));
       socket.on('error', fail);
+      socket.on('close', () => {
+        this.socket = null;
+        this.fireOnclosed();
+      });
 
       socket.on('connect', () => {
         step = 1;
@@ -109,7 +127,9 @@ export class RoonConnection implements Transport {
   }
 
   close(): void {
+    // Idempotent: the socket 'close' event also lands here via fireOnclosed.
     this.socket?.destroy();
     this.socket = null;
+    this.fireOnclosed();
   }
 }

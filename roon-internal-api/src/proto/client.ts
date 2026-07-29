@@ -55,6 +55,9 @@ export class RoonClient {
     this.conn = new RoonConnection({ host: opts.host, port: opts.port, serverBrokerId: opts.serverBrokerId });
     this.remoting = new RemotingClient(this.conn);
     this.remoting.onPush = (f) => this.graph.ingest(f);
+    // Whenever the socket dies (peer disconnect, error, close), fail in-flight
+    // requests immediately rather than waiting out their timeouts.
+    this.conn.onclosed = () => this.remoting.failPending('broker connection closed');
     this.explicitProfile = opts.profileSooid;
     this.settleMs = opts.settleMs ?? 2000;
   }
@@ -89,6 +92,9 @@ export class RoonClient {
   }
 
   close(): void {
+    // failPending fires synchronously here (and again, as a no-op, from the
+    // socket 'close' event) so callers see rejections before close() returns.
+    this.remoting.failPending('client closed');
     this.conn.close();
   }
 
