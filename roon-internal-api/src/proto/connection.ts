@@ -67,6 +67,18 @@ export class RoonConnection implements Transport {
   connect(): Promise<void> {
     const { host, port = 9332, serverBrokerId } = this.opts;
     return new Promise<void>((resolve, reject) => {
+      // This class does not support reconnecting once a session has been
+      // established: `established` never resets, and the remoting layer's
+      // DEFMETHOD/DEFTYPE declarations and object ids are per-connection
+      // anyway. Reject before touching any state (a live session stays
+      // usable) instead of feeding a second handshake to the frame parser
+      // and stalling until the socket timeout. Reconnect = new instance.
+      if (this.established) {
+        reject(
+          new Error('RoonConnection cannot reconnect after an established session; create a new instance')
+        );
+        return;
+      }
       const socket = new net.Socket();
       this.socket = socket;
       // Re-arm the once-only close notification for this attempt: a connect()

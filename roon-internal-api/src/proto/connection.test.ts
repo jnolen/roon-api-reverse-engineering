@@ -108,4 +108,25 @@ describe('RoonConnection close notification across socket attempts', () => {
     },
     10000
   );
+
+  test('a post-established connect() on a reused instance rejects fast instead of hanging', async () => {
+    const port = await grabEphemeralPort();
+    const core = await startFakeCore(port);
+    const conn = new RoonConnection({
+      host: '127.0.0.1',
+      port,
+      serverBrokerId: Buffer.alloc(16),
+    });
+    try {
+      await conn.connect();
+      // Without the guard this fed the second handshake to the frame parser
+      // and stalled until the 20s socket timeout.
+      await expect(conn.connect()).rejects.toThrow(/cannot reconnect/);
+      // The rejected attempt must leave the live session untouched.
+      expect(() => conn.send(Buffer.from([0x00]))).not.toThrow();
+    } finally {
+      conn.close();
+      await core.close();
+    }
+  });
 });
