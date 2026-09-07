@@ -25,7 +25,8 @@ function startFakeCore(
       }
       if (step === 1 && data.subarray(0, 4).equals(MAGIC)) {
         step = 2;
-        socket.write(Buffer.concat([MAGIC, Buffer.from([0x01, 0x82]), Buffer.alloc(4)]));
+        // The real 0182 record is 22 bytes: 6-byte header + 16-byte session id.
+        socket.write(Buffer.concat([MAGIC, Buffer.from([0x01, 0x82]), Buffer.alloc(16)]));
         return;
       }
       if (step === 2) {
