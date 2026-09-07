@@ -117,3 +117,20 @@ Attempts the full favorite flow. Connection succeeds, schema arrives, but the fa
 1. Make cloud API calls (`api.roonlabs.net`) with auth token before local mutations
 2. Find where auth token is used in binary protocol
 3. Check for pairing/registration step we're missing
+
+### `play-history.ts`
+**Status: WORKING** (validated live against a 2.71 Core with a 10,630-play
+history: a single-page run and a 150-play multi-page run — newest-first
+order, unique play identities, zero unresolvable skips)
+
+Exports the profile's play history, newest first, via
+`Library::VirtualHistoryQuery` + per-page `RetainPage`/`ReleasePage`,
+printing one JSON line per play (playedAt / artist / title / album /
+completionPct / roonTrackId). The header documents the HistoryPlay wire
+layout: `Time` is a .NET DateTime int64 (Kind bits + ticks), `HistoryPlayId`
+equals the raw ticks, `TrackBase` is an inline TrackLink carrying the stable
+TrackId.
+
+```bash
+npx ts-node examples/play-history.ts 50
+```
