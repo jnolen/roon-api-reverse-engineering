@@ -69,39 +69,72 @@ export class RoonConnection implements Transport {
         socket.write(Buffer.concat([MAGIC, Buffer.from([0x01, 0x04]), serverBrokerId, this.clientBrokerId]));
       });
 
+      // Handshake replies are fixed-length records (lengths from wire
+      // captures): the 0180 ack is 6 bytes, the 0182 reply is 22 (6-byte
+      // header + 16-byte session id). TCP does not preserve those record
+      // boundaries (#10), so buffer inbound bytes, consume complete records,
+      // and hand any remainder to the remoting layer once established.
+      const ACK_RECORD_LEN = 6; // ROON 01 80
+      const SESSION_RECORD_LEN = 22; // ROON 01 82 + 16-byte session id
+      let pending: Buffer = Buffer.alloc(0);
+
       socket.on('data', (data: Buffer) => {
         if (this.established) {
           this.dataHandler(data);
           return;
         }
-        // Handshake state machine. Each step here is a discrete small packet.
-        if (data.length >= 6 && data.subarray(0, 4).toString() === 'ROON') {
-          const code = data[5];
-          if (step === 1 && code === 0x80) {
-            step = 2;
-            socket.write(Buffer.concat([MAGIC, Buffer.from([0x01, 0x02])]));
+        pending = pending.length === 0 ? data : Buffer.concat([pending, data]);
+        // Consume complete handshake records; a partial record waits for more.
+        for (;;) {
+          if (step === 1 || step === 2) {
+            if (pending.length < ACK_RECORD_LEN) return;
+            if (pending.subarray(0, 4).toString() !== 'ROON') {
+              fail(new Error(`unexpected non-ROON bytes during handshake (step ${step})`));
+              return;
+            }
+            const code = pending[5];
+            if (step === 1 && code === 0x80) {
+              pending = pending.subarray(ACK_RECORD_LEN);
+              step = 2;
+              socket.write(Buffer.concat([MAGIC, Buffer.from([0x01, 0x02])]));
+              continue;
+            }
+            if (step === 2 && code === 0x82) {
+              if (pending.length < SESSION_RECORD_LEN) return; // wait for the whole record
+              pending = pending.subarray(SESSION_RECORD_LEN);
+              step = 3;
+              const cr = Buffer.from(
+                CONNECT_REQUEST_TEMPLATE.replace(
+                  'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
+                  this.clientBrokerId.toString('hex')
+                ),
+                'hex'
+              );
+              socket.write(cr);
+              continue;
+            }
+            fail(new Error(`unexpected handshake reply 0x${code.toString(16)} at step ${step}`));
             return;
           }
-          if (step === 2 && code === 0x82) {
-            step = 3;
-            const cr = Buffer.from(
-              CONNECT_REQUEST_TEMPLATE.replace(
-                'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-                this.clientBrokerId.toString('hex')
-              ),
-              'hex'
-            );
-            socket.write(cr);
+          if (step === 3) {
+            // First bytes after our ConnectRequest are the ConnectResponse:
+            // remoting is live, and everything buffered belongs to it.
+            if (pending.length === 0) return;
+            this.established = true;
+            const rest = pending;
+            pending = Buffer.alloc(0);
+            resolve();
+            this.dataHandler(rest);
             return;
           }
+          return; // step 0: nothing arrives before our hello is written
         }
-        // First non-ROON bytes after ConnectRequest == ConnectResponse: remoting is live.
-        if (step === 3) {
-          this.established = true;
-          resolve();
-          // The ConnectResponse and any trailing bytes belong to the remoting layer.
-          this.dataHandler(data);
-        }
+      });
+
+      // A clean FIN before the handshake completes fires no 'error', which
+      // used to leave the promise unsettled; reject it explicitly.
+      socket.on('close', () => {
+        if (!this.established) reject(new Error('connection closed during handshake'));
       });
 
       socket.connect(port, host);
