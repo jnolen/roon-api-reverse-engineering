@@ -37,9 +37,11 @@ export class RoonConnection implements Transport {
   readonly clientBrokerId = crypto.randomBytes(16);
 
   /**
-   * Fired once when the socket closes for any reason (explicit close(), peer
+   * Fired when the socket closes for any reason (explicit close(), peer
    * disconnect, error) so the remoting layer can fail in-flight requests
-   * immediately instead of waiting out their timeouts.
+   * immediately instead of waiting out their timeouts. Fires at most once per
+   * socket attempt: a connect() that fails before establishment consumes its
+   * own notification, and a retried connect() re-arms it.
    */
   onclosed: () => void = () => {};
   private onclosedFired = false;
@@ -67,6 +69,10 @@ export class RoonConnection implements Transport {
     return new Promise<void>((resolve, reject) => {
       const socket = new net.Socket();
       this.socket = socket;
+      // Re-arm the once-only close notification for this attempt: a connect()
+      // that failed before establishment must not consume the notification
+      // that belongs to the socket we are about to open.
+      this.onclosedFired = false;
       let step = 0;
       socket.setTimeout(20000);
 
@@ -78,6 +84,9 @@ export class RoonConnection implements Transport {
       socket.on('timeout', () => fail(new Error('connection timed out during handshake')));
       socket.on('error', fail);
       socket.on('close', () => {
+        // A superseded attempt's socket must not clear the current socket or
+        // fail its requests: only the socket we still own reports closure.
+        if (this.socket !== socket) return;
         this.socket = null;
         this.fireOnclosed();
       });
@@ -127,7 +136,9 @@ export class RoonConnection implements Transport {
   }
 
   close(): void {
-    // Idempotent: the socket 'close' event also lands here via fireOnclosed.
+    // Idempotent: fireOnclosed dedupes the synchronous notification here, and
+    // the destroyed socket's own later 'close' event is guarded out because
+    // this.socket is already null by the time it fires.
     this.socket?.destroy();
     this.socket = null;
     this.fireOnclosed();

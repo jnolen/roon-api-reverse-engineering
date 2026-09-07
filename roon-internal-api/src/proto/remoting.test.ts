@@ -126,7 +126,10 @@ describe('connection-close cleanup', () => {
     await expect(p).rejects.toThrow(/first/);
   });
 
-  test('a request against a dead transport fails immediately, not by timeout', async () => {
+  test('a request against a dead transport fails immediately and leaks nothing', async () => {
+    // getService() reaches request() without a preceding DEFMETHOD write, so
+    // the throwing send exercises request()'s own catch — callMethod() would
+    // throw earlier, inside ensureDefined(), and never enter request().
     const dead: Transport = {
       send: () => {
         throw new Error('not connected');
@@ -134,8 +137,25 @@ describe('connection-close cleanup', () => {
       onData: () => {},
     };
     const c = new RemotingClient(dead);
-    const started = Date.now();
+    jest.useFakeTimers();
+    try {
+      await expect(c.getService(new Uint8Array(16))).rejects.toThrow(/not connected/);
+      // The catch must also clean up: no leaked pending entry, no live timer.
+      expect((c as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test('callMethod against a dead transport also rejects (throw lands in ensureDefined)', async () => {
+    const dead: Transport = {
+      send: () => {
+        throw new Error('not connected');
+      },
+      onData: () => {},
+    };
+    const c = new RemotingClient(dead);
     await expect(c.callMethod(1n, SIG, Buffer.alloc(0))).rejects.toThrow(/not connected/);
-    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
